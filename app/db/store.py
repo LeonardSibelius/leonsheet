@@ -53,6 +53,34 @@ class Store:
         sheet.bulk_load(raw_values)
         return sheet
 
+    def replace_all(self, sheet: Sheet) -> None:
+        """Wipe the DB and write everything from `sheet`. Atomic.
+
+        Used by CSV import, which replaces the entire grid contents in one shot.
+        Drops both `cells` and `dependencies` then re-inserts from the sheet's
+        in-memory state.
+        """
+        with closing(get_connection(self.db_path)) as conn:
+            with conn:
+                conn.execute("DELETE FROM cells")
+                conn.execute("DELETE FROM dependencies")
+                for (row, col), raw in sheet.raw_values.items():
+                    conn.execute(
+                        "INSERT INTO cells (row, col, raw_value) VALUES (?, ?, ?)",
+                        (row, col, raw),
+                    )
+                    for (tr, tc) in sheet.depends_on.get((row, col), set()):
+                        conn.execute(
+                            "INSERT INTO dependencies "
+                            "(from_row, from_col, to_row, to_col) VALUES (?, ?, ?, ?)",
+                            (row, col, tr, tc),
+                        )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) "
+                    "VALUES ('last_modified', ?)",
+                    (str(int(time.time())),),
+                )
+
     def persist_cells(self, sheet: Sheet, cells: Iterable[CellId]) -> None:
         """Write the listed cells' raw_value + forward dependencies. Atomic.
 

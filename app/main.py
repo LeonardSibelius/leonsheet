@@ -18,11 +18,13 @@ with v2.0's WebSocket multi-user).
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import csv
+import io
 import math
 import threading
 
-from fastapi import FastAPI, Form, Path as PathParam, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, File, Form, Path as PathParam, Request, UploadFile
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app import __version__
@@ -135,6 +137,68 @@ def create_app(db_path: Path = DEFAULT_DB_PATH) -> FastAPI:
                 )
             )
         return HTMLResponse("\n".join(fragments))
+
+    @app.post("/import-csv")
+    async def import_csv(request: Request, file: UploadFile = File(...)):
+        """Replace the entire grid contents with the uploaded CSV.
+
+        Per spec v1.0 §6: "No formula interpretation on import (a string like
+        '=A1+1' imports as literal text, not a formula)." We achieve this by
+        prefixing any =-starting CSV cell with "'" — the apostrophe-escape
+        convention also used by Excel. _parse_literal strips the apostrophe
+        on display; set_cell's startswith("=") check never fires on "'="
+        strings so the literal stays literal across save/reload cycles.
+
+        Truncates silently to the 26x100 grid.
+        """
+        content = (await file.read()).decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(content))
+
+        raw_values: dict[tuple[int, int], str] = {}
+        for r, row in enumerate(reader):
+            if r >= NUM_ROWS:
+                break
+            for c, value in enumerate(row):
+                if c >= NUM_COLS:
+                    break
+                if value == "":
+                    continue
+                stored = "'" + value if value.startswith("=") else value
+                raw_values[(r, c)] = stored
+
+        sheet = request.app.state.sheet
+        store = request.app.state.store
+        with sheet_lock:
+            sheet.bulk_load(raw_values)
+            store.replace_all(sheet)
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.get("/export-csv")
+    def export_csv(request: Request):
+        """Download the grid as CSV. Formula cells export COMPUTED values, not formula text.
+
+        Per spec v1.0 §6. Errors export as their #-prefixed code (#DIV/0!, etc.).
+        Empty cells export as empty fields. The exported grid is tight — its
+        dimensions are the bounding box of non-empty cells, not the full 26x100.
+        """
+        sheet = request.app.state.sheet
+        if not sheet.raw_values:
+            max_row = max_col = 0
+        else:
+            max_row = max(r for r, _ in sheet.raw_values) + 1
+            max_col = max(c for _, c in sheet.raw_values) + 1
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        for r in range(max_row):
+            row = [format_display(sheet.get_value(r, c)) for c in range(max_col)]
+            writer.writerow(row)
+
+        return Response(
+            buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="leonsheet.csv"'},
+        )
 
     return app
 

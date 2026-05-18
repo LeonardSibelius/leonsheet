@@ -53,9 +53,21 @@ def _parse_literal(raw: str) -> Value:
     "5"     -> 5.0
     "3.14"  -> 3.14
     "hello" -> "hello"
+    "'=A1+1" -> "=A1+1"     # leading-apostrophe escape (Excel convention).
+                            # Lets CSV import preserve =-prefixed strings as
+                            # literal text — see spec: "No formula interpretation
+                            # on import (a string like '=A1+1' imports as literal
+                            # text, not a formula)."
+
+    Note: set_cell decides formula-vs-literal by checking startswith("="), so
+    a raw_value starting with "'=" never reaches the formula path — the
+    apostrophe makes it a literal cell whose computed value is the post-quote
+    string.
     """
     if raw == "":
         return EMPTY
+    if raw.startswith("'"):
+        return raw[1:]
     try:
         return float(raw)
     except ValueError:
