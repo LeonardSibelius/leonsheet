@@ -1,0 +1,162 @@
+{% import 'macros.html' as m %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>leonsheet</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; }
+        .cell {
+            border: 1px solid #e5e7eb;
+            padding: 2px 6px;
+            width: 96px;
+            height: 22px;
+            font-size: 13px;
+            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+            background: white;
+        }
+        .cell:focus {
+            outline: 2px solid #3b82f6;
+            outline-offset: -2px;
+            background: #eff6ff;
+            position: relative;
+            z-index: 1;
+        }
+        .cell-error { color: #dc2626; font-weight: 600; }
+        th, td.row-header {
+            background: #f3f4f6;
+            padding: 2px 8px;
+            font-weight: 500;
+            font-size: 12px;
+            color: #6b7280;
+            border: 1px solid #e5e7eb;
+            text-align: center;
+            min-width: 32px;
+            position: sticky;
+        }
+        thead th { top: 0; z-index: 2; }
+        td.row-header { left: 0; z-index: 2; }
+        thead th:first-child { z-index: 3; left: 0; }
+        table { border-collapse: collapse; }
+        td { padding: 0; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <header class="p-3 bg-white border-b border-gray-200 flex items-center gap-3 sticky top-0 z-20">
+        <div class="text-sm font-mono text-gray-700 w-14 text-center font-semibold" id="active-cell-label">A1</div>
+        <input id="formula-bar"
+               type="text"
+               class="flex-1 px-3 py-1 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+               placeholder="Type a value or =FORMULA, press Enter to commit"
+               autocomplete="off"
+               spellcheck="false">
+    </header>
+    <main class="overflow-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th></th>
+                    {% for c in range(num_cols) %}
+                    <th>{{ col_letter(c) }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in range(num_rows) %}
+                <tr>
+                    <td class="row-header">{{ r + 1 }}</td>
+                    {% for c in range(num_cols) %}
+                    <td>{{ m.cell(r, c, sheet.get_raw(r, c), format_display(sheet.get_value(r, c)), is_error(sheet.get_value(r, c))) }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </main>
+    <script>
+        // Active cell tracking + formula bar sync.
+        const formulaBar = document.getElementById('formula-bar');
+        const activeCellLabel = document.getElementById('active-cell-label');
+        let activeCell = null;
+        let lastFocusedId = null;  // for focus restoration across HTMX swaps (predicted bug #1)
+
+        function colLetter(col) {
+            // Bijective base-26 — same as app/formula/refs.py.
+            let result = '', n = col + 1;
+            while (n > 0) {
+                n -= 1;
+                result = String.fromCharCode(65 + n % 26) + result;
+                n = Math.floor(n / 26);
+            }
+            return result;
+        }
+
+        // On cell focus: cache active cell, swap value to data-raw for editing,
+        // sync formula bar, update label.
+        document.addEventListener('focusin', (e) => {
+            if (!e.target.matches('input.cell')) return;
+            activeCell = e.target;
+            lastFocusedId = e.target.id;
+            const row = parseInt(e.target.dataset.row, 10);
+            const col = parseInt(e.target.dataset.col, 10);
+            activeCellLabel.textContent = colLetter(col) + (row + 1);
+            // Switch from display value to raw text for editing.
+            e.target.value = e.target.dataset.raw || '';
+            formulaBar.value = e.target.dataset.raw || e.target.dataset.display || '';
+        });
+
+        // On cell blur with NO change: restore the display value (since focus
+        // overwrote it with the raw text). If the value DID change, hx-trigger
+        // posts and the swap response replaces the input wholesale — no
+        // restore needed.
+        document.addEventListener('focusout', (e) => {
+            if (!e.target.matches('input.cell')) return;
+            if (e.target.value === (e.target.dataset.raw || '')) {
+                e.target.value = e.target.dataset.display || '';
+            }
+        });
+
+        // Enter in a cell -> blur (which triggers the hx-trigger=change commit).
+        document.addEventListener('keydown', (e) => {
+            if (!e.target.matches('input.cell')) return;
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.target.blur();
+            } else if (e.key === 'Escape') {
+                // Revert: restore raw to its pre-edit state.
+                e.preventDefault();
+                e.target.value = e.target.dataset.raw || '';
+                e.target.blur();
+            }
+        });
+
+        // Formula bar -> active cell commit on Enter.
+        formulaBar.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' || !activeCell) return;
+            e.preventDefault();
+            const row = parseInt(activeCell.dataset.row, 10);
+            const col = parseInt(activeCell.dataset.col, 10);
+            const cellId = activeCell.id;
+            lastFocusedId = cellId;
+            htmx.ajax('POST', `/cell/${row}/${col}`, {
+                target: `#${cellId}`,
+                swap: 'outerHTML',
+                values: { raw_value: formulaBar.value }
+            });
+        });
+
+        // After every HTMX swap, restore focus to the last-focused cell if
+        // focus has been dropped to body. Predicted bug #1 (HTMX swap losing
+        // cell focus): without this, a per-cell OOB swap that includes the
+        // edited cell drops the user's keyboard focus.
+        document.addEventListener('htmx:afterSwap', () => {
+            if (lastFocusedId && document.activeElement === document.body) {
+                const el = document.getElementById(lastFocusedId);
+                if (el) el.focus();
+            }
+        });
+    </script>
+</body>
+</html>

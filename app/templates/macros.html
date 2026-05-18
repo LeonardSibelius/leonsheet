@@ -1,0 +1,35 @@
+{# Single source of truth for cell rendering.
+
+   Used by:
+     * index.html — initial grid render (2600 cells, called as a macro)
+     * routes (main.py) — POST /cell response for the edited cell + every
+       affected dependent (oob=True for everything except the edited cell)
+
+   Each cell carries:
+     - data-raw      : the string the user typed (formula or literal text)
+     - data-display  : the formatted value shown when the cell is unfocused
+     - value         : same as data-display initially
+                       JS swaps to data-raw on focus, back on blur if unchanged
+     - name="raw_value": what gets POSTed on change
+
+   hx-trigger="change" implements commit-on-blur (predicted bug #16): the
+   change event fires when the value differs from the value at focus time
+   AND the cell loses focus. No flood on per-keystroke input.
+#}
+{% macro cell(r, c, raw, display, is_error, oob=False) -%}
+<input class="cell{% if is_error %} cell-error{% endif %}"
+       id="cell-{{ r }}-{{ c }}"
+       name="raw_value"
+       data-row="{{ r }}"
+       data-col="{{ c }}"
+       data-raw="{{ raw | e }}"
+       data-display="{{ display | e }}"
+       value="{{ display | e }}"
+       hx-post="/cell/{{ r }}/{{ c }}"
+       hx-trigger="change"
+       hx-target="#cell-{{ r }}-{{ c }}"
+       hx-swap="outerHTML"
+       {% if oob %}hx-swap-oob="true"{% endif %}
+       autocomplete="off"
+       spellcheck="false">
+{%- endmacro %}
