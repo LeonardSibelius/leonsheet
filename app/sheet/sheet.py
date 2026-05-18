@@ -172,6 +172,60 @@ class Sheet:
         """The string the user last typed into this cell (or '' if not set)."""
         return self.raw_values.get((row, col), "")
 
+    def bulk_load(self, raw_values: dict[CellId, str]) -> None:
+        """Replace sheet contents with `raw_values`; rebuild deps; recompute everything.
+
+        Used by Store.load at app startup. N-cell bulk load avoids the
+        O(N^2) cost of calling set_cell() N times (each would trigger
+        its own topo recalc) and avoids the bootstrap problem where
+        formulas would reference cells not yet inserted.
+
+        Three phases:
+          1. Parse every formula (collecting parse-error cells separately).
+             Build forward + reverse adjacency from the resulting deps.
+          2. Compute literal cells (so formulas can read them in phase 3).
+          3. Topologically sort the formula subgraph and evaluate in order.
+             Cycled cells (predicted bug #8) -> ERR_CIRCULAR.
+             Parse-error cells -> ERR_VALUE.
+
+        Predicted bug #5 (order stability) still applies inside phase 3 —
+        topological_sort runs once across the entire formula graph.
+        """
+        self.raw_values = dict(raw_values)
+        self.formulas.clear()
+        self.depends_on.clear()
+        self.depended_on_by.clear()
+        self.computed.clear()
+
+        parse_errors: set[CellId] = set()
+        for cell, raw in self.raw_values.items():
+            if raw.startswith("="):
+                try:
+                    ast = parse_formula(raw)
+                    self.formulas[cell] = ast
+                    self._add_edges(cell, _extract_deps(ast))
+                except ParseError:
+                    parse_errors.add(cell)
+
+        # Phase 2: literal cells get their values first.
+        for cell, raw in self.raw_values.items():
+            if cell not in self.formulas and cell not in parse_errors:
+                self.computed[cell] = _parse_literal(raw)
+
+        # Phase 3: formulas in topological order; cycles marked.
+        formula_cells = set(self.formulas.keys())
+        ordered, cycled = topological_sort(
+            formula_cells, self.depends_on, self.depended_on_by
+        )
+        for c in cycled:
+            self.computed[c] = ERR_CIRCULAR
+        for c in ordered:
+            self.computed[c] = self._evaluate_cell(c)
+
+        # Parse-error cells last (overrides any earlier assignment).
+        for cell in parse_errors:
+            self.computed[cell] = ERR_VALUE
+
     # --- internals ---
 
     def _remove_edges_from(self, cell: CellId) -> None:
