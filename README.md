@@ -71,10 +71,8 @@ app/
     refs.py             # Bijective base-26 column letter conversions
     values.py           # EMPTY, ErrorValue sentinels
   sheet/
-    cells.py            # Cell store with public attrs
     graph.py            # Forward/reverse adjacency + Kahn topo sort
-    recalc.py           # Recalc orchestration
-    sheet.py            # Sheet class, bulk_load, public API
+    sheet.py            # Sheet class, set_cell, bulk_load, _recalc_from orchestration
   templates/
     index.html          # Grid + formula bar
     macros.html         # Single source for cell rendering
@@ -153,7 +151,7 @@ MIT.
 ## Related
 
 - **[Outwork #10](https://wpoutwork.substack.com/p/what-3-hours-of-cloning-excel-with)** — the positioning essay for the build (three-part entity framing)
-- **Outwork #11** — engineering retrospective (publishing imminent; will link here when live)
+- **[Outwork #11](https://wpoutwork.substack.com/p/building-leonsheet-the-engineering)** — engineering retrospective (dependency graph, formula language, 17-bug preflight, code excerpts)
 - **[leonardsibelius.com](https://leonardsibelius.com)** — engineering portfolio (Leonard Sibelius is what happens when Walt + Cowork + Code work as one)
 - **[github.com/LeonardSibelius/orders-pipeline](https://github.com/LeonardSibelius/orders-pipeline)** — companion Java/Camel portfolio piece (federal-contracting profile)
 
